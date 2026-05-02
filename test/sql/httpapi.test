@@ -1,0 +1,36 @@
+# name: test/sql/httpapi.test
+# description: test httpapi extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT http_get('http://example.com');
+----
+Catalog Error: Scalar Function with name http_get does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require httpapi
+
+# Invalid URL is reported via the error field, status stays 0
+query III
+SELECT (r).status, (r).body, (r).error
+FROM (SELECT http_get('not-a-url') AS r) t;
+----
+0	(empty)	invalid url: not-a-url
+
+# Unknown method returns NULL when input URL is NULL
+query I
+SELECT http_get(NULL) IS NULL;
+----
+true
+
+# Function signatures are registered (we don't hit the network in unit tests)
+query I
+SELECT typeof(http_get('http://example.com')) ILIKE 'STRUCT(status INTEGER, body VARCHAR, error VARCHAR)';
+----
+true
+
+query I
+SELECT typeof(http_post('http://example.com', '{}')) ILIKE 'STRUCT(status INTEGER, body VARCHAR, error VARCHAR)';
+----
+true
