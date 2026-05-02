@@ -1,10 +1,6 @@
 {
         "dependencies": [
-                "openssl",
-                {
-                        "name": "cpp-httplib",
-                        "features": ["openssl"]
-                }
+                "openssl"
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [
