@@ -195,8 +195,7 @@ void HttpBodyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 			continue;
 		}
 		auto b_idx = body_format.sel->get_index(i);
-		std::string body =
-		    body_format.validity.RowIsValid(b_idx) ? bodies[b_idx].GetString() : std::string();
+		std::string body = body_format.validity.RowIsValid(b_idx) ? bodies[b_idx].GetString() : std::string();
 		auto resp = DoRequest(METHOD, urls[u_idx].GetString(), body);
 		WriteResponse(result, i, resp);
 	}
