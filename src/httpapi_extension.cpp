@@ -3,18 +3,23 @@
 
 #include "httpapi_extension.hpp"
 #include "duckdb.hpp"
-#include "duckdb/common/exception.hpp"
-#include "duckdb/common/types.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
+// NOLINTBEGIN
 #include <httplib.h>
+// NOLINTEND
 
+#include <cctype>
 #include <string>
+#include <utility>
 
 namespace duckdb {
 
 namespace {
+
+constexpr int kHttpDefaultPort = 80;
+constexpr int kHttpsDefaultPort = 443;
+constexpr int kDefaultTimeoutSeconds = 30;
 
 enum class HttpMethod { GET, POST, PUT, PATCH, DELETE_, HEAD };
 
@@ -49,14 +54,24 @@ ParsedUrl ParseUrl(const std::string &url) {
 	auto colon = host_port.find(':');
 	if (colon == std::string::npos) {
 		out.host = host_port;
-		out.port = (out.scheme == "https") ? 443 : 80;
+		out.port = (out.scheme == "https") ? kHttpsDefaultPort : kHttpDefaultPort;
 	} else {
 		out.host = host_port.substr(0, colon);
-		try {
-			out.port = std::stoi(host_port.substr(colon + 1));
-		} catch (...) {
+		auto port_str = host_port.substr(colon + 1);
+		if (port_str.empty()) {
 			return out;
 		}
+		int port = 0;
+		for (char c : port_str) {
+			if (std::isdigit(static_cast<unsigned char>(c)) == 0) {
+				return out;
+			}
+			port = port * 10 + (c - '0');
+			if (port > 65535) {
+				return out;
+			}
+		}
+		out.port = port;
 	}
 	if (out.host.empty()) {
 		return out;
@@ -71,20 +86,20 @@ struct HttpResponse {
 	std::string error;
 };
 
-HttpResponse DoRequest(HttpMethod method, const std::string &url, const std::string &body,
-                       const std::string &content_type) {
+HttpResponse DoRequest(HttpMethod method, const std::string &url, const std::string &body) {
 	HttpResponse resp;
 	auto parsed = ParseUrl(url);
 	if (!parsed.valid) {
 		resp.error = "invalid url: " + url;
 		return resp;
 	}
-	std::string base = parsed.scheme + "://" + parsed.host + ":" + std::to_string(parsed.port);
-	httplib::Client cli(base);
+
+	const std::string content_type = "application/json";
+	httplib::Client cli(parsed.scheme + "://" + parsed.host + ":" + std::to_string(parsed.port));
 	cli.set_follow_location(true);
-	cli.set_connection_timeout(30);
-	cli.set_read_timeout(30);
-	cli.set_write_timeout(30);
+	cli.set_connection_timeout(kDefaultTimeoutSeconds);
+	cli.set_read_timeout(kDefaultTimeoutSeconds);
+	cli.set_write_timeout(kDefaultTimeoutSeconds);
 
 	httplib::Result r;
 	switch (method) {
@@ -92,13 +107,13 @@ HttpResponse DoRequest(HttpMethod method, const std::string &url, const std::str
 		r = cli.Get(parsed.path);
 		break;
 	case HttpMethod::POST:
-		r = cli.Post(parsed.path, body, content_type.c_str());
+		r = cli.Post(parsed.path, body, content_type);
 		break;
 	case HttpMethod::PUT:
-		r = cli.Put(parsed.path, body, content_type.c_str());
+		r = cli.Put(parsed.path, body, content_type);
 		break;
 	case HttpMethod::PATCH:
-		r = cli.Patch(parsed.path, body, content_type.c_str());
+		r = cli.Patch(parsed.path, body, content_type);
 		break;
 	case HttpMethod::DELETE_:
 		r = cli.Delete(parsed.path);
@@ -140,7 +155,8 @@ void WriteResponse(Vector &result, idx_t row, const HttpResponse &resp) {
 }
 
 template <HttpMethod METHOD>
-void HttpNoBodyFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void HttpNoBodyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	(void)state;
 	auto count = args.size();
 	auto &url_vec = args.data[0];
 	UnifiedVectorFormat url_format;
@@ -153,13 +169,14 @@ void HttpNoBodyFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
-		auto resp = DoRequest(METHOD, urls[u_idx].GetString(), "", "");
+		auto resp = DoRequest(METHOD, urls[u_idx].GetString(), "");
 		WriteResponse(result, i, resp);
 	}
 }
 
 template <HttpMethod METHOD>
-void HttpBodyFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void HttpBodyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	(void)state;
 	auto count = args.size();
 	auto &url_vec = args.data[0];
 	auto &body_vec = args.data[1];
@@ -178,8 +195,9 @@ void HttpBodyFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			continue;
 		}
 		auto b_idx = body_format.sel->get_index(i);
-		std::string body = body_format.validity.RowIsValid(b_idx) ? bodies[b_idx].GetString() : std::string();
-		auto resp = DoRequest(METHOD, urls[u_idx].GetString(), body, "application/json");
+		std::string body =
+		    body_format.validity.RowIsValid(b_idx) ? bodies[b_idx].GetString() : std::string();
+		auto resp = DoRequest(METHOD, urls[u_idx].GetString(), body);
 		WriteResponse(result, i, resp);
 	}
 }
